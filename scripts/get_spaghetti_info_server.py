@@ -18,7 +18,7 @@ import torch
 from torchvision import transforms
 import torch.nn.functional as F
 
-class GetFoodInfoActionServer(Node):
+class GetSpaghettiInfoActionServer(Node):
 
     def __init__(self, torch_device="cpu", write_dir=None):
         super().__init__('get_food_info_node')
@@ -46,7 +46,7 @@ class GetFoodInfoActionServer(Node):
         # ROS
         self._action_server = ActionServer(
             self,
-            bta.GetFoodInfoWriteImage,
+            bta.GetSpaghettiInfoWriteImage,
             'get_food_info',
             self.execute_callback)
 
@@ -150,8 +150,6 @@ class GetFoodInfoActionServer(Node):
             return np.rad2deg((ang1 - ang2) % (2 * np.pi))
         if source_px[1] > target_px[1]:
             source_px, target_px = target_px, source_px
-        #diff_px = source_px - target_px 
-        #diff_px[1] = image_height - diff_px[1]
         source_px_cartesian = np.array([source_px[0], image_height-source_px[1]])
         target_px_cartesian = np.array([target_px[0], image_height-target_px[1]])
         angle = angle_between(np.array([-image_width,0]), source_px_cartesian-target_px_cartesian)
@@ -162,7 +160,7 @@ class GetFoodInfoActionServer(Node):
         fp = goal_handle.request.file_path
         self.get_logger().info('Executing food info goal...')
 
-        result = bta.GetFoodInfoWriteImage.Result()
+        result = bta.GetSpaghettiInfoWriteImage.Result()
 
         if len(fp) > 0:
             result.success = False
@@ -209,6 +207,6 @@ if __name__ == '__main__':
     parser.add_argument('--use_cpu', action='store_true')
     args = parser.parse_args()
 
-    food_info_server = GetFoodInfoActionServer("cpu" if args.use_cpu else "cuda")
+    food_info_server = GetSpaghettiInfoActionServer("cpu" if args.use_cpu else "cuda")
 
     rclpy.spin(food_info_server)
