@@ -183,6 +183,9 @@ class GetSpaghettiInfoActionServer(Node):
         color_image_vis = color_image.copy()
         depth_image_vis = depth_image.copy()
 
+        cv2.imshow('vis', depth_image_vis)
+        cv2.waitKey(0)
+
         img_crop, mask, scale_factor, global_pixel_offset  = self.run_segmentation_inference(color_image)
         hull_px, center_px = self.segmask_to_convex_hull(img_crop, mask)
 
@@ -192,13 +195,20 @@ class GetSpaghettiInfoActionServer(Node):
         for u,v in hull_px:
             cv2.circle(color_image_vis, (u,v), 5, (0,255,0), -1)
             cv2.arrowedLine(color_image_vis, (u,v), tuple(center_px),(0,255,0), 1)
-            angle = self.angle_between_pixels(np.array([u,v]), center_px, color_image.shape[1], color_image.shape[0])
-            print((u,v), angle)
-        cv2.circle(color_image_vis, tuple(center_px), 5, (0,0,255), -1)
+            push_angle = self.angle_between_pixels(np.array([u,v]), center_px, color_image.shape[1], color_image.shape[0])
+            uv_depth = depth_frame.get_distance(u, v)
+            hull_pt_3d = rs.rs2_deproject_pixel_to_point(self.depth_intrin, [u,v], uv_depth)
+            hull_vec_3d = Vector3(x=hull_pt_3d[0], y=hull_pt_3d[1], z=hull_pt_3d[2])
+            result.push_angles.extend([push_angle])
+            result.push_points.extend([hull_vec_3d])
 
+        cv2.circle(color_image_vis, tuple(center_px), 5, (0,0,255), -1)
         cv2.imshow('img',color_image_vis)
         cv2.waitKey(0)
 
+        result.success = True
+        goal_handle.succeed()
+        return result
 
 if __name__ == '__main__':
     rclpy.init()
