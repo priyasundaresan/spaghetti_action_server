@@ -20,8 +20,9 @@ import torch.nn.functional as F
 
 class GetSpaghettiInfoActionServer(Node):
 
-    def __init__(self, torch_device="cpu", write_dir=None):
+    def __init__(self, torch_device="cpu"):
         super().__init__('get_food_info_node')
+        self.goal_idx = 0
 
         self.device = torch_device
 
@@ -33,8 +34,9 @@ class GetSpaghettiInfoActionServer(Node):
         self.seg_net.to(torch_device)
         self.seg_net_transform = transforms.Compose([transforms.ToTensor()])
 
-        if write_dir is None:
-            self.write_dir = os.path.join(os.path.dirname(__file__), "preds")
+        self.write_dir = os.path.join(os.path.dirname(__file__), "preds")
+        if not os.path.exists(self.write_dir):
+            os.mkdir(self.write_dir)
 
         # Configure depth and color streams
         self.pipeline = rs.pipeline()
@@ -99,12 +101,12 @@ class GetSpaghettiInfoActionServer(Node):
 
         mask = cv2.normalize(probs, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         mask_3ch_vis = np.repeat(mask[:,:,np.newaxis], 3, axis=2)
-        cv2.imshow('vis', np.hstack((img_crop, mask_3ch_vis)))
-        cv2.waitKey(0)
-        return img_crop, mask, scale_factor, global_pixel_offset
+        #cv2.imshow('vis', np.hstack((img_crop, mask_3ch_vis)))
+        #cv2.waitKey(0)
+        return img_crop, mask, scale_factor, global_pixel_offset, np.hstack((img_crop, mask_3ch_vis))
 
     def prune_close_pixels(self, pixels):
-        min_thresh = 90
+        min_thresh = 110
         neigh = NearestNeighbors()
         pruned = []
         for pixel in pixels:
@@ -118,17 +120,58 @@ class GetSpaghettiInfoActionServer(Node):
             neigh.fit(pruned)
         return np.array(pruned)
 
+    def detect_plate(self, img):
+        H,W,C = img.shape
+        img_orig = img.copy()
+        img = cv2.resize(img, (W//2, H//2))
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray_blurred = cv2.blur(gray, (3, 3))
+        detected_circles = cv2.HoughCircles(gray_blurred,
+                           cv2.HOUGH_GRADIENT, 1, 20, param1 = 50,
+                       param2 = 30, minRadius = 100, maxRadius = 130)
+        plate_mask = np.zeros((H,W))
+        # Draw circles that are detected.
+        if detected_circles is not None:
+            # Convert the circle parameters a, b and r to integers.
+            detected_circles = np.uint16(np.around(detected_circles))
+            for pt in detected_circles[0, :]:
+                a, b, r = pt[0], pt[1], pt[2]
+                print('radius', r)
+                #cv2.circle(img, (a, b), r, (0, 255, 0), 2)
+                #cv2.circle(img, (a, b), 1, (0, 0, 255), 3)
+                #cv2.imshow("Detected Circle", img)
+
+                #cv2.circle(img_orig, (a*2, b*2), r*2, (0, 255, 0), 2)
+                #cv2.circle(img_orig, (a*2, b*2), 1, (0, 0, 255), 3)
+                #cv2.imshow("Detected Circle", img_orig)
+
+                cv2.circle(plate_mask, (a*2, b*2), int(r*1.85), (255,255,255), -1)
+                #cv2.imshow("Detected Circle", plate_mask)
+                #cv2.waitKey(0)
+                break
+            return plate_mask
+
     def segmask_to_convex_hull(self, img, mask):
+        plate_mask = self.detect_plate(img)
+        mask_resulting = plate_mask*mask
+        cv2.imshow('mask', np.hstack((plate_mask, mask, mask_resulting)))
+        cv2.waitKey(0)
+        mask = mask_resulting.astype(np.uint8)
+
         contours,hierarchy = cv2.findContours(mask,cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         length = len(contours)
-        #for c in contours:
-        #    print(cv2.contourArea(c))
-        #cont = np.vstack((contours[i] for i in range(length) if cv2.contourArea(contours[i]) > 100))
-        cont = np.vstack((contours[i] for i in range(length) if (cv2.contourArea(contours[i]) > 1600)))
+        for c in contours:
+            print(cv2.contourArea(c))
+        #cont = np.vstack((contours[i] for i in range(length) if (cv2.contourArea(contours[i]) > 1600)))
+        cont = np.vstack((contours[i] for i in range(length)))
         hull = cv2.convexHull(cont)
         hull_filtered = self.prune_close_pixels(hull.reshape(len(hull), 2)).astype(int)
+        print(hull_filtered)
         center = np.mean(hull_filtered, axis=0).astype(int)
-        #for u,v in hull_filtered:
+        hull_result = []
+        for u,v in hull_filtered:
+            hull_result.append((np.array([u,v]) - 0.15*(center - np.array([u,v]))).astype(int))
+        hull_filtered = np.array(hull_result)
         #    cv2.circle(img, (u,v), 5, (0,255,0), -1)
         #cv2.drawContours(img, [hull], -1, (255,255,0), 2)
         #cv2.circle(img, tuple(center), 5, (0,0,255), -1)
@@ -137,7 +180,7 @@ class GetSpaghettiInfoActionServer(Node):
         return hull_filtered, center
 
     def rescale_px(self, pixels, scale_factor, global_pixel_offset):
-        print(scale_factor, global_pixel_offset)
+        #print(scale_factor, global_pixel_offset)
         pixels = pixels.astype(float)
         pixels *= scale_factor
         pixels += global_pixel_offset
@@ -183,31 +226,40 @@ class GetSpaghettiInfoActionServer(Node):
         color_image_vis = color_image.copy()
         depth_image_vis = depth_image.copy()
 
-        cv2.imshow('vis', depth_image_vis)
-        cv2.waitKey(0)
-
-        img_crop, mask, scale_factor, global_pixel_offset  = self.run_segmentation_inference(color_image)
+        img_crop, mask, scale_factor, global_pixel_offset, mask_rgb_vis  = self.run_segmentation_inference(color_image)
         hull_px, center_px = self.segmask_to_convex_hull(img_crop, mask)
 
         hull_px = self.rescale_px(hull_px, scale_factor, global_pixel_offset)
         center_px = self.rescale_px(center_px, scale_factor, global_pixel_offset)
+        center_depth = depth_frame.get_distance(center_px[0], center_px[1])
+        center_pt_3d = rs.rs2_deproject_pixel_to_point(self.depth_intrin, [center_px[0],center_px[1]], center_depth)
+        center_vec_3d = Vector3(x=center_pt_3d[0], y=center_pt_3d[1], z=center_pt_3d[2])
 
-        for u,v in hull_px:
+        result.center_point = center_vec_3d
+
+        for (i,(u,v)) in enumerate(hull_px):
             cv2.circle(color_image_vis, (u,v), 5, (0,255,0), -1)
             cv2.arrowedLine(color_image_vis, (u,v), tuple(center_px),(0,255,0), 1)
+            cv2.putText(color_image_vis, str(i), (u,v-20), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,100), 1, 2)
             push_angle = self.angle_between_pixels(np.array([u,v]), center_px, color_image.shape[1], color_image.shape[0])
             uv_depth = depth_frame.get_distance(u, v)
             hull_pt_3d = rs.rs2_deproject_pixel_to_point(self.depth_intrin, [u,v], uv_depth)
-            hull_vec_3d = Vector3(x=hull_pt_3d[0], y=hull_pt_3d[1], z=hull_pt_3d[2])
+            z_thresholded = np.clip(hull_pt_3d[2], 0.46, 0.47)
+            hull_vec_3d = Vector3(x=hull_pt_3d[0], y=hull_pt_3d[1], z=z_thresholded)
             result.push_angles.extend([push_angle])
             result.push_points.extend([hull_vec_3d])
 
         cv2.circle(color_image_vis, tuple(center_px), 5, (0,0,255), -1)
+        cv2.imwrite('%s/%03d_push.jpg'%(self.write_dir, self.goal_idx), color_image_vis)
+        cv2.imwrite('%s/%03d_vis_debug.jpg'%(self.write_dir, self.goal_idx), mask_rgb_vis)
         cv2.imshow('img',color_image_vis)
         cv2.waitKey(0)
 
+
+        self.goal_idx += 1
         result.success = True
         goal_handle.succeed()
+        self.pipeline.stop()
         return result
 
 if __name__ == '__main__':
